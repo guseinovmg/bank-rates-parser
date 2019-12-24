@@ -5,6 +5,7 @@ import (
 	"fmt"
 	_ "github.com/lib/pq"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -32,7 +33,26 @@ func main() {
 		_ = tb.Scan(&b.id, &b.host, &b.name, &b.website, &b.currencyCode)
 		banks = append(banks, b)
 	}
+	banksChan := make(chan Bank)
+	const routinesCount = 5
+	var done sync.WaitGroup
+	if routinesCount < len(banks) {
+		done.Add(routinesCount)
+	} else {
+		done.Add(len(banks))
+	}
+	for i := 1; i <= routinesCount; i++ {
+		go Fetch(banksChan, done, db)
+	}
 	for _, bank := range banks {
+		banksChan <- bank
+	}
+	close(banksChan)
+	done.Wait()
+}
+
+func Fetch(banks chan Bank, done sync.WaitGroup, db *sql.DB) {
+	for bank := range banks {
 		fmt.Print(bank.host)
 		var rates []Rate
 		pages := make(map[string]string)
@@ -56,4 +76,5 @@ func main() {
 			}
 		}
 	}
+	done.Done()
 }
