@@ -2,11 +2,9 @@ package main
 
 import (
 	"database/sql"
-	"fmt"
 	_ "github.com/lib/pq"
 	"log"
 	"sync"
-	"time"
 )
 
 type Bank struct {
@@ -49,32 +47,4 @@ func main() {
 	}
 	close(banksChan)
 	done.Wait()
-}
-
-func Fetch(banks chan Bank, done sync.WaitGroup, db *sql.DB) {
-	for bank := range banks {
-		fmt.Print(bank.host)
-		var rates []Rate
-		pages := make(map[string]string)
-		GetPages(bank.website, 2, &pages)
-		fmt.Print(len(pages))
-		for _, page := range pages {
-			rt, err := Parse(page, bank.currencyCode)
-			fmt.Println(rt)
-			if err == nil {
-				rates = append(rates, rt...)
-			} else {
-				fmt.Print(err)
-			}
-		}
-		fmt.Print(rates, "\n")
-		if len(rates) > 0 {
-			now := time.Now()
-			for _, rate := range rates {
-				_, _ = db.Exec(`insert into rates (bank_id, foreign_currency, base_currency, buy_rate, sell_rate, created_on)
-				values ($1, $2, $3, $4, $5, $6);`, bank.id, rate.currency, bank.currencyCode, rate.buy, rate.sell, now)
-			}
-		}
-	}
-	done.Done()
 }

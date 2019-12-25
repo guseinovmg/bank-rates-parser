@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/tls"
+	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/guseinovmg/goquery"
 	"io/ioutil"
 	"math"
 	"net/http"
@@ -11,9 +13,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
-import "github.com/guseinovmg/goquery"
 
 type Rate struct {
 	currency string
@@ -21,13 +23,12 @@ type Rate struct {
 	sell     float64
 }
 
-var floatReg = regexp.MustCompile(`\d+([.,]\d+)?`)
-
-func ParseFloat(str string) float64 {
-	str = strings.Replace(str, ",", ".", 5)
-	num, _ := strconv.ParseFloat(string(str), 64)
-	return num
+type currencyNames struct {
+	name          string
+	searchStrings []string
 }
+
+var floatReg = regexp.MustCompile(`\d+([.,]\d+)?`)
 
 var tr = &http.Transport{
 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -37,15 +38,51 @@ var tr = &http.Transport{
 
 var client = &http.Client{Transport: tr}
 
-func getFile(host string) (page string, err error) {
-	buf, err := ioutil.ReadFile("./pages/" + host + ".html")
-	if err != nil {
-		return "", err
-	}
-	return string(buf), nil
+var currencyTypes = []currencyNames{
+	{name: "USD", searchStrings: []string{"$", "usd", "us dollar", "доллар сша", "доллары сша"}},
+	{name: "EUR", searchStrings: []string{"€", "eur", "евро"}},
+	{name: "RUB", searchStrings: []string{"₽", "rub", "rur", "ruble", "рубль"}},
+	{name: "KZT", searchStrings: []string{"₸", "kzt", "тенге"}},
+	{name: "INR", searchStrings: []string{"₹", "inr", "indian rupee"}},
+	{name: "KRW", searchStrings: []string{"₩", "krw", "won"}},
+	{name: "GBP", searchStrings: []string{"£", "gbr", "pound", "фунт"}},
+	{name: "BRL", searchStrings: []string{"brl"}},
+	{name: "CNY", searchStrings: []string{"cny", "yuan", "юань"}},
+	{name: "IDR", searchStrings: []string{"idr"}},
+	{name: "TRY", searchStrings: []string{"₺", "try", "турецкая лира"}},
+	{name: "CHF", searchStrings: []string{"chf", "швейцарский франк"}},
+	{name: "JPY", searchStrings: []string{"jpy", "yen", "иена"}},
 }
 
-func Request(url string) (page string, err error) {
+func Fetch(banks chan Bank, done sync.WaitGroup, db *sql.DB) {
+	for bank := range banks {
+		fmt.Print(bank.host)
+		var rates []Rate
+		pages := make(map[string]string)
+		getPages(bank.website, 2, &pages)
+		fmt.Print(len(pages))
+		for _, page := range pages {
+			rt, err := parse(page, bank.currencyCode)
+			fmt.Println(rt)
+			if err == nil {
+				rates = append(rates, rt...)
+			} else {
+				fmt.Print(err)
+			}
+		}
+		fmt.Print(rates, "\n")
+		if len(rates) > 0 {
+			now := time.Now()
+			for _, rate := range rates {
+				_, _ = db.Exec(`insert into rates (bank_id, foreign_currency, base_currency, buy_rate, sell_rate, created_on)
+				values ($1, $2, $3, $4, $5, $6);`, bank.id, rate.currency, bank.currencyCode, rate.buy, rate.sell, now)
+			}
+		}
+	}
+	done.Done()
+}
+
+func request(url string) (page string, err error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err
@@ -70,9 +107,9 @@ func Request(url string) (page string, err error) {
 	return page, nil
 }
 
-func GetPages(url string, depth int, result *map[string]string) {
+func getPages(url string, depth int, result *map[string]string) {
 	time.Sleep(time.Millisecond * 300)
-	page, err := Request(url)
+	page, err := request(url)
 	if err != nil {
 		return
 	}
@@ -106,11 +143,11 @@ func GetPages(url string, depth int, result *map[string]string) {
 			}
 			href = "https://" + host.Hostname() + href
 		}
-		GetPages(href, depth-1, result)
+		getPages(href, depth-1, result)
 	})
 }
 
-func Parse(page string, ignoreCurrency string) ([]Rate, error) {
+func parse(page string, ignoreCurrency string) ([]Rate, error) {
 	page = strings.ToLower(page)
 	page = strings.ReplaceAll(page, "</td>", " </td>")
 	page = strings.ReplaceAll(page, "</th>", " </th>")
@@ -128,8 +165,8 @@ func Parse(page string, ignoreCurrency string) ([]Rate, error) {
 		}
 		numericStrings := floatReg.FindAllString(sText, 3)
 		if len(numericStrings) == 2 {
-			buy := ParseFloat(numericStrings[0])
-			sell := ParseFloat(numericStrings[1])
+			buy := parseFloat(numericStrings[0])
+			sell := parseFloat(numericStrings[1])
 			if math.Abs(buy-sell)/(buy+sell) > 0.1 {
 				return
 			}
@@ -150,27 +187,6 @@ func Parse(page string, ignoreCurrency string) ([]Rate, error) {
 	return result, nil
 }
 
-type currencyNames struct {
-	name          string
-	searchStrings []string
-}
-
-var currencyTypes = []currencyNames{
-	currencyNames{name: "USD", searchStrings: []string{"$", "usd", "us dollar", "доллар сша", "доллары сша"}},
-	currencyNames{name: "EUR", searchStrings: []string{"€", "eur", "евро"}},
-	currencyNames{name: "RUB", searchStrings: []string{"₽", "rub", "rur", "ruble", "рубль"}},
-	currencyNames{name: "KZT", searchStrings: []string{"₸", "kzt", "тенге"}},
-	currencyNames{name: "INR", searchStrings: []string{"₹", "inr", "indian rupee"}},
-	currencyNames{name: "KRW", searchStrings: []string{"₩", "krw", "won"}},
-	currencyNames{name: "GBP", searchStrings: []string{"£", "gbr", "pound", "фунт"}},
-	currencyNames{name: "BRL", searchStrings: []string{"brl"}},
-	currencyNames{name: "CNY", searchStrings: []string{"cny", "yuan", "юань"}},
-	currencyNames{name: "IDR", searchStrings: []string{"idr"}},
-	currencyNames{name: "TRY", searchStrings: []string{"₺", "try", "турецкая лира"}},
-	currencyNames{name: "CHF", searchStrings: []string{"chf", "швейцарский франк"}},
-	currencyNames{name: "JPY", searchStrings: []string{"jpy", "yen", "иена"}},
-}
-
 func findCurrencies(str string, ignoreCurrency string) []string {
 	result := make([]string, 0, 12)
 	for _, t := range currencyTypes {
@@ -185,4 +201,10 @@ func findCurrencies(str string, ignoreCurrency string) []string {
 		}
 	}
 	return result
+}
+
+func parseFloat(str string) float64 {
+	str = strings.Replace(str, ",", ".", 5)
+	num, _ := strconv.ParseFloat(string(str), 64)
+	return num
 }
