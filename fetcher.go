@@ -172,7 +172,7 @@ func parse(url string, page string, ignoreCurrency string) ([]Rate, error) {
 		if len(numericStrings) == 2 {
 			buy := parseFloat(numericStrings[0])
 			sell := parseFloat(numericStrings[1])
-			if buy == sell || math.Abs(buy-sell)/(buy+sell) > 0.1 {
+			if buy == sell || math.Abs(buy-sell)/(buy+sell) > 0.1 || (buy > 1950 && buy < 2035) {
 				return
 			}
 			if buy > sell {
