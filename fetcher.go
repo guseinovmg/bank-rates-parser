@@ -21,6 +21,7 @@ type Rate struct {
 	currency string
 	buy      float64
 	sell     float64
+	url      string
 }
 
 type currencyNames struct {
@@ -44,6 +45,7 @@ var currencyTypes = []currencyNames{
 	{name: "RUB", searchStrings: []string{"₽", "rub", "rur", "ruble", "рубль"}},
 	{name: "KZT", searchStrings: []string{"₸", "kzt", "тенге"}},
 	{name: "INR", searchStrings: []string{"₹", "inr", "indian rupee"}},
+	{name: "IDR", searchStrings: []string{"idr"}},
 	{name: "KRW", searchStrings: []string{"₩", "krw", "won"}},
 	{name: "GBP", searchStrings: []string{"£", "gbr", "pound", "фунт"}},
 	{name: "BRL", searchStrings: []string{"brl"}},
@@ -61,8 +63,8 @@ func Fetch(banks chan Bank, done sync.WaitGroup, db *sql.DB) {
 		pages := make(map[string]string)
 		getPages(bank.website, 2, &pages)
 		fmt.Print(len(pages))
-		for _, page := range pages {
-			rt, err := parse(page, bank.currencyCode)
+		for url, page := range pages {
+			rt, err := parse(url, page, bank.currencyCode)
 			fmt.Println(rt)
 			if err == nil {
 				rates = append(rates, rt...)
@@ -74,8 +76,11 @@ func Fetch(banks chan Bank, done sync.WaitGroup, db *sql.DB) {
 		if len(rates) > 0 {
 			now := time.Now()
 			for _, rate := range rates {
-				_, _ = db.Exec(`insert into rates (bank_id, foreign_currency, base_currency, buy_rate, sell_rate, created_on)
-				values ($1, $2, $3, $4, $5, $6);`, bank.id, rate.currency, bank.currencyCode, rate.buy, rate.sell, now)
+				_, err := db.Exec(`insert into rates (bank_id, foreign_currency, base_currency, buy_rate, sell_rate, created_on, url)
+				values ($1, $2, $3, $4, $5, $6, $7);`, bank.id, rate.currency, bank.currencyCode, rate.buy, rate.sell, now, rate.url)
+				if err != nil {
+					fmt.Print(err)
+				}
 			}
 		}
 	}
@@ -147,7 +152,7 @@ func getPages(url string, depth int, result *map[string]string) {
 	})
 }
 
-func parse(page string, ignoreCurrency string) ([]Rate, error) {
+func parse(url string, page string, ignoreCurrency string) ([]Rate, error) {
 	page = strings.ToLower(page)
 	page = strings.ReplaceAll(page, "</td>", " </td>")
 	page = strings.ReplaceAll(page, "</th>", " </th>")
@@ -167,7 +172,7 @@ func parse(page string, ignoreCurrency string) ([]Rate, error) {
 		if len(numericStrings) == 2 {
 			buy := parseFloat(numericStrings[0])
 			sell := parseFloat(numericStrings[1])
-			if math.Abs(buy-sell)/(buy+sell) > 0.1 {
+			if buy == sell || math.Abs(buy-sell)/(buy+sell) > 0.1 {
 				return
 			}
 			if buy > sell {
@@ -175,7 +180,7 @@ func parse(page string, ignoreCurrency string) ([]Rate, error) {
 			}
 			var foundCurrencies = findCurrencies(sText, ignoreCurrency)
 			if len(foundCurrencies) == 1 {
-				rate := Rate{currency: foundCurrencies[0], buy: buy, sell: sell}
+				rate := Rate{currency: foundCurrencies[0], buy: buy, sell: sell, url: url}
 				result = append(result, rate)
 			}
 		}

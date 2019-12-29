@@ -32,7 +32,7 @@ func main() {
 		banks = append(banks, b)
 	}
 	banksChan := make(chan Bank)
-	const routinesCount = 5
+	const routinesCount = 20
 	var done sync.WaitGroup
 	if routinesCount < len(banks) {
 		done.Add(routinesCount)
